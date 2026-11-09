@@ -1,0 +1,60 @@
+# Paste this into TrueNAS: Apps > Discover > ⋮ > Install via YAML
+# The only thing to change: replace PASTE_YOUR_TUNNEL_TOKEN_HERE with your Cloudflare tunnel token.
+# Never put the token on GitHub. It only goes here, inside TrueNAS.
+#
+# The site downloads itself from GitHub and checks for changes every 5 minutes,
+# so edits made on github.com go live on their own. No folders or permissions needed.
+services:
+  site-sync:
+    image: alpine/git:latest
+    container_name: kungfu-clubhouse-sync
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ ! -d /repo/.git ]; then
+          git clone --depth 1 https://github.com/klosixgaming-arch/kungfu-clubhouse.git /tmp/clone && cp -a /tmp/clone/. /repo/
+        fi
+        while true; do
+          git -C /repo fetch --depth 1 origin main && git -C /repo reset --hard origin/main
+          sleep 300
+        done
+    volumes:
+      - site:/repo
+
+  kungfu-clubhouse:
+    image: nginx:1.27-alpine
+    container_name: kungfu-clubhouse
+    restart: unless-stopped
+    depends_on:
+      - site-sync
+    ports:
+      - "2244:80"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until [ -f /repo/site/index.html ]; do echo "waiting for site files"; sleep 3; done
+        rm -rf /usr/share/nginx/html && ln -s /repo/site /usr/share/nginx/html
+        cp /repo/nginx.conf /etc/nginx/conf.d/default.conf
+        exec nginx -g "daemon off;"
+    volumes:
+      - site:/repo:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Connects the site to KungFuClubHouse.com through Cloudflare. No router ports needed.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: kungfu-clubhouse-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=PASTE_YOUR_TUNNEL_TOKEN_HERE
+    depends_on:
+      - kungfu-clubhouse
+
+volumes:
+  site:
